@@ -15,8 +15,13 @@ SecurityEvent
 | where TimeGenerated > ago(24h)
 | where EventID == 4768
 | where ResultCode == "0x0"  // Successful TGT request
+| where isnotempty(TicketOptions)  // Ensure Kerberos ticket fields are present
 | extend 
-    TicketLifetimeHours = datetime_diff('hour', TicketExpirationTime, TimeGenerated)
+    // Use coalesce to handle potential null values in TicketExpirationTime
+    TicketExpTime = coalesce(TicketExpirationTime, TimeGenerated),
+    TicketLifetimeHours = iff(isnotempty(TicketExpirationTime), 
+        datetime_diff('hour', TicketExpirationTime, TimeGenerated), 
+        toint(0))
 | where TicketLifetimeHours > 10  // Normal TGT lifetime is 10 hours
 | project 
     TimeGenerated,
@@ -25,7 +30,7 @@ SecurityEvent
     IpAddress,
     TicketEncryptionType,
     TicketLifetimeHours,
-    TicketExpirationTime
+    TicketExpTime
 | extend 
     AlertDescription = strcat("TGT with abnormal lifetime (", TicketLifetimeHours, " hours) for ", TargetUserName),
     AlertSeverity = case(

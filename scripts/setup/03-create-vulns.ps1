@@ -143,15 +143,23 @@ catch {
 Write-Host ""
 Write-Host "[*] Configuring Vulnerability 7: Guest Account..." -ForegroundColor Yellow
 
-try {
-    # Enable guest account (common misconfiguration)
-    Enable-ADAccount -Identity "Guest"
-    
-    Write-Host "[+] Enabled Guest account" -ForegroundColor Green
-    Write-Host "    Risk: Anonymous access to domain resources" -ForegroundColor Gray
-}
-catch {
-    Write-Host "[!] Guest account configuration: $_" -ForegroundColor Yellow
+# Safety check: Verify this is a lab environment
+$LabCheck = $env:COMPUTERNAME -match "DC01|LAB|TEST" -or (Get-ADDomain).DNSRoot -match "local|lab|test"
+if (-not $LabCheck) {
+    Write-Host "[!] SAFETY CHECK FAILED: This does not appear to be a lab environment!" -ForegroundColor Red
+    Write-Host "    Skipping Guest account enablement for safety." -ForegroundColor Red
+} else {
+    try {
+        # Enable guest account (common misconfiguration) - LAB USE ONLY
+        Enable-ADAccount -Identity "Guest"
+        
+        Write-Host "[+] Enabled Guest account" -ForegroundColor Green
+        Write-Host "    Risk: Anonymous access to domain resources" -ForegroundColor Gray
+        Write-Host "    WARNING: FOR LAB USE ONLY - Never enable in production!" -ForegroundColor Red
+    }
+    catch {
+        Write-Host "[!] Guest account configuration: $_" -ForegroundColor Yellow
+    }
 }
 
 # ============================================

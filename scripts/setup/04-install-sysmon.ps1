@@ -236,9 +236,14 @@ $AuditPolicies = @(
 
 foreach ($Policy in $AuditPolicies) {
     try {
-        $Cmd = "auditpol /set /subcategory:`"$($Policy.Subcategory)`" /success:$($Policy.Success) /failure:$($Policy.Failure)"
-        Invoke-Expression $Cmd 2>&1 | Out-Null
-        Write-Host "[+] Configured audit policy: $($Policy.Subcategory)" -ForegroundColor Green
+        # Using Start-Process instead of Invoke-Expression for security
+        $Arguments = "/set /subcategory:`"$($Policy.Subcategory)`" /success:$($Policy.Success) /failure:$($Policy.Failure)"
+        $Process = Start-Process -FilePath "auditpol.exe" -ArgumentList $Arguments -NoNewWindow -Wait -PassThru
+        if ($Process.ExitCode -eq 0) {
+            Write-Host "[+] Configured audit policy: $($Policy.Subcategory)" -ForegroundColor Green
+        } else {
+            Write-Host "[!] Could not configure: $($Policy.Subcategory)" -ForegroundColor Yellow
+        }
     }
     catch {
         Write-Host "[!] Could not configure: $($Policy.Subcategory)" -ForegroundColor Yellow

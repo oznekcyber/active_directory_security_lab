@@ -112,9 +112,13 @@ echo -e "${BLUE}  [*] Enumerating accessible shares...${NC}"
 crackmapexec smb "$DC_IP" -u "$USERNAME" -p "$PASSWORD" --shares 2>/dev/null | tee "$OUTPUT_DIR/shares.txt"
 echo ""
 
+# Network targets (configurable for different lab environments)
+WS01_IP="${WS01_IP:-192.168.1.101}"
+WS02_IP="${WS02_IP:-192.168.1.102}"
+
 # Check for local admin rights
 echo -e "${BLUE}  [*] Checking local admin access...${NC}"
-crackmapexec smb 192.168.1.100 192.168.1.101 192.168.1.102 -u "$USERNAME" -p "$PASSWORD" 2>/dev/null | tee "$OUTPUT_DIR/admin_access.txt"
+crackmapexec smb "$DC_IP" "$WS01_IP" "$WS02_IP" -u "$USERNAME" -p "$PASSWORD" 2>/dev/null | tee "$OUTPUT_DIR/admin_access.txt"
 echo ""
 
 # ============================================
