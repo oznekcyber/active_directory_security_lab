@@ -1,0 +1,283 @@
+{
+    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+    "contentVersion": "1.0.0.0",
+    "metadata": {
+        "title": "Block Malicious IP Address",
+        "description": "Automatically enriches IP addresses from security alerts using threat intelligence services and blocks malicious IPs at the firewall level.",
+        "prerequisites": [
+            "VirusTotal API key",
+            "AbuseIPDB API key (optional)",
+            "Azure Firewall or Network Security Group connection",
+            "Azure Sentinel connection"
+        ],
+        "author": "AD Security Lab",
+        "lastModified": "2024-01-01T00:00:00Z",
+        "tags": ["Incident Response", "IP Blocking", "Threat Intelligence"]
+    },
+    "parameters": {
+        "$connections": {
+            "defaultValue": {},
+            "type": "Object"
+        },
+        "virustotal_api_key": {
+            "defaultValue": "",
+            "type": "SecureString"
+        },
+        "abuseipdb_api_key": {
+            "defaultValue": "",
+            "type": "SecureString"
+        },
+        "malicious_threshold": {
+            "defaultValue": 3,
+            "type": "Int",
+            "metadata": {
+                "description": "Minimum number of positive detections to consider IP malicious"
+            }
+        }
+    },
+    "triggers": {
+        "Microsoft_Sentinel_incident": {
+            "type": "ApiConnectionWebhook",
+            "inputs": {
+                "body": {
+                    "callback_url": "@{listCallbackUrl()}"
+                },
+                "host": {
+                    "connection": {
+                        "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                    }
+                },
+                "path": "/incident-creation"
+            }
+        }
+    },
+    "actions": {
+        "Entities_-_Get_IPs": {
+            "runAfter": {},
+            "type": "ApiConnection",
+            "inputs": {
+                "body": "@triggerBody()?['object']?['properties']?['relatedEntities']",
+                "host": {
+                    "connection": {
+                        "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                    }
+                },
+                "method": "post",
+                "path": "/entities/ip"
+            }
+        },
+        "Initialize_blocked_ips_array": {
+            "runAfter": {
+                "Entities_-_Get_IPs": ["Succeeded"]
+            },
+            "type": "InitializeVariable",
+            "inputs": {
+                "variables": [
+                    {
+                        "name": "BlockedIPs",
+                        "type": "array",
+                        "value": []
+                    }
+                ]
+            }
+        },
+        "Initialize_enrichment_results": {
+            "runAfter": {
+                "Initialize_blocked_ips_array": ["Succeeded"]
+            },
+            "type": "InitializeVariable",
+            "inputs": {
+                "variables": [
+                    {
+                        "name": "EnrichmentResults",
+                        "type": "array",
+                        "value": []
+                    }
+                ]
+            }
+        },
+        "For_each_IP": {
+            "foreach": "@body('Entities_-_Get_IPs')?['IPs']",
+            "actions": {
+                "Query_VirusTotal": {
+                    "runAfter": {},
+                    "type": "Http",
+                    "inputs": {
+                        "method": "GET",
+                        "uri": "https://www.virustotal.com/api/v3/ip_addresses/@{items('For_each_IP')?['Address']}",
+                        "headers": {
+                            "x-apikey": "@parameters('virustotal_api_key')"
+                        }
+                    },
+                    "runtimeConfiguration": {
+                        "contentTransfer": {
+                            "transferMode": "Chunked"
+                        }
+                    }
+                },
+                "Parse_VirusTotal_response": {
+                    "runAfter": {
+                        "Query_VirusTotal": ["Succeeded"]
+                    },
+                    "type": "ParseJson",
+                    "inputs": {
+                        "content": "@body('Query_VirusTotal')",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "data": {
+                                    "type": "object",
+                                    "properties": {
+                                        "attributes": {
+                                            "type": "object",
+                                            "properties": {
+                                                "last_analysis_stats": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "malicious": {"type": "integer"},
+                                                        "suspicious": {"type": "integer"},
+                                                        "harmless": {"type": "integer"}
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "Condition_-_Is_IP_malicious": {
+                    "actions": {
+                        "Append_to_blocked_IPs": {
+                            "runAfter": {},
+                            "type": "AppendToArrayVariable",
+                            "inputs": {
+                                "name": "BlockedIPs",
+                                "value": "@items('For_each_IP')?['Address']"
+                            }
+                        },
+                        "Add_IP_to_blocklist": {
+                            "runAfter": {
+                                "Append_to_blocked_IPs": ["Succeeded"]
+                            },
+                            "type": "ApiConnection",
+                            "inputs": {
+                                "body": {
+                                    "name": "Block-@{items('For_each_IP')?['Address']}",
+                                    "properties": {
+                                        "action": "Deny",
+                                        "sourceAddresses": ["@{items('For_each_IP')?['Address']}"],
+                                        "destinationAddresses": ["*"],
+                                        "destinationPorts": ["*"]
+                                    }
+                                },
+                                "host": {
+                                    "connection": {
+                                        "name": "@parameters('$connections')['azurefirewall']['connectionId']"
+                                    }
+                                },
+                                "method": "put",
+                                "path": "/networkrules"
+                            }
+                        }
+                    },
+                    "runAfter": {
+                        "Parse_VirusTotal_response": ["Succeeded"]
+                    },
+                    "expression": {
+                        "and": [
+                            {
+                                "greater": [
+                                    "@body('Parse_VirusTotal_response')?['data']?['attributes']?['last_analysis_stats']?['malicious']",
+                                    "@parameters('malicious_threshold')"
+                                ]
+                            }
+                        ]
+                    },
+                    "type": "If"
+                },
+                "Append_enrichment_result": {
+                    "runAfter": {
+                        "Condition_-_Is_IP_malicious": ["Succeeded"]
+                    },
+                    "type": "AppendToArrayVariable",
+                    "inputs": {
+                        "name": "EnrichmentResults",
+                        "value": {
+                            "ip": "@items('For_each_IP')?['Address']",
+                            "malicious": "@body('Parse_VirusTotal_response')?['data']?['attributes']?['last_analysis_stats']?['malicious']",
+                            "suspicious": "@body('Parse_VirusTotal_response')?['data']?['attributes']?['last_analysis_stats']?['suspicious']",
+                            "harmless": "@body('Parse_VirusTotal_response')?['data']?['attributes']?['last_analysis_stats']?['harmless']",
+                            "blocked": "@contains(variables('BlockedIPs'), items('For_each_IP')?['Address'])"
+                        }
+                    }
+                }
+            },
+            "runAfter": {
+                "Initialize_enrichment_results": ["Succeeded"]
+            },
+            "type": "Foreach"
+        },
+        "Add_enrichment_comment_to_incident": {
+            "runAfter": {
+                "For_each_IP": ["Succeeded"]
+            },
+            "type": "ApiConnection",
+            "inputs": {
+                "body": {
+                    "incidentArmId": "@triggerBody()?['object']?['id']",
+                    "message": "<p><strong>🔍 Threat Intelligence Enrichment Results:</strong></p>\n<pre>@{json(variables('EnrichmentResults'))}</pre>\n<p><strong>Blocked IPs:</strong> @{join(variables('BlockedIPs'), ', ')}</p>\n<p><strong>Timestamp:</strong> @{utcNow()}</p>"
+                },
+                "host": {
+                    "connection": {
+                        "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                    }
+                },
+                "method": "post",
+                "path": "/Incidents/Comment"
+            }
+        },
+        "Condition_-_Any_IPs_blocked": {
+            "actions": {
+                "Send_notification_about_blocked_IPs": {
+                    "runAfter": {},
+                    "type": "ApiConnection",
+                    "inputs": {
+                        "body": {
+                            "body": {
+                                "content": "<p><strong>🛡️ Malicious IP Addresses Blocked</strong></p>\n<p><strong>Incident:</strong> @{triggerBody()?['object']?['properties']?['title']}</p>\n<p><strong>Blocked IPs:</strong></p>\n<ul>\n@{join(variables('BlockedIPs'), '<li>', '</li>')}\n</ul>\n<p><strong>Action:</strong> Network rules added to block traffic from/to these IPs.</p>",
+                                "contentType": "html"
+                            },
+                            "importance": "High",
+                            "subject": "[AUTOMATED] Malicious IPs Blocked - @{triggerBody()?['object']?['properties']?['incidentNumber']}",
+                            "toRecipients": "security-team@yourcompany.local"
+                        },
+                        "host": {
+                            "connection": {
+                                "name": "@parameters('$connections')['office365']['connectionId']"
+                            }
+                        },
+                        "method": "post",
+                        "path": "/v2/Mail"
+                    }
+                }
+            },
+            "runAfter": {
+                "Add_enrichment_comment_to_incident": ["Succeeded"]
+            },
+            "expression": {
+                "and": [
+                    {
+                        "greater": [
+                            "@length(variables('BlockedIPs'))",
+                            0
+                        ]
+                    }
+                ]
+            },
+            "type": "If"
+        }
+    },
+    "outputs": {}
+}

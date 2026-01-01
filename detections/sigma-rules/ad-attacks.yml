@@ -1,0 +1,299 @@
+# Active Directory Attack Detection Rules (SIGMA Format)
+# 
+# These rules detect common Active Directory attacks in the Security Lab.
+# Convert to your SIEM format using sigmac or sigma-cli.
+#
+# References:
+# - https://github.com/SigmaHQ/sigma
+# - https://attack.mitre.org/
+
+---
+title: Password Spraying Attack Detection
+id: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+status: experimental
+description: Detects password spraying attacks by monitoring for multiple failed logon attempts from a single source targeting multiple accounts.
+references:
+    - https://attack.mitre.org/techniques/T1110/003/
+author: AD Security Lab
+date: 2024/01/01
+modified: 2024/01/01
+tags:
+    - attack.credential_access
+    - attack.t1110.003
+logsource:
+    product: windows
+    service: security
+detection:
+    selection:
+        EventID: 4625
+        LogonType: 3
+    timeframe: 10m
+    condition: selection | count(TargetUserName) by IpAddress > 5
+falsepositives:
+    - Legitimate batch processes using service accounts
+    - Vulnerability scanners
+level: high
+
+---
+title: Kerberoasting Service Ticket Request
+id: b2c3d4e5-f6a7-8901-bcde-f23456789012
+status: experimental
+description: Detects Kerberoasting attacks by monitoring for service ticket requests using RC4 encryption.
+references:
+    - https://attack.mitre.org/techniques/T1558/003/
+author: AD Security Lab
+date: 2024/01/01
+tags:
+    - attack.credential_access
+    - attack.t1558.003
+logsource:
+    product: windows
+    service: security
+detection:
+    selection:
+        EventID: 4769
+        TicketEncryptionType: '0x17'
+    filter:
+        ServiceName|endswith: '$'
+    condition: selection and not filter
+falsepositives:
+    - Legacy applications requiring RC4
+    - Old systems in the environment
+level: medium
+
+---
+title: AS-REP Roasting Attack
+id: c3d4e5f6-a7b8-9012-cdef-345678901234
+status: experimental
+description: Detects AS-REP Roasting by monitoring for TGT requests using RC4 encryption for accounts without pre-authentication.
+references:
+    - https://attack.mitre.org/techniques/T1558/004/
+author: AD Security Lab
+date: 2024/01/01
+tags:
+    - attack.credential_access
+    - attack.t1558.004
+logsource:
+    product: windows
+    service: security
+detection:
+    selection:
+        EventID: 4768
+        TicketEncryptionType: '0x17'
+        Status: '0x0'
+    condition: selection
+falsepositives:
+    - Legacy Kerberos clients
+level: medium
+
+---
+title: Pass-the-Hash Attack Detection
+id: d4e5f6a7-b8c9-0123-def4-567890123456
+status: experimental
+description: Detects potential Pass-the-Hash attacks by monitoring for NTLM authentication from unusual sources.
+references:
+    - https://attack.mitre.org/techniques/T1550/002/
+author: AD Security Lab
+date: 2024/01/01
+tags:
+    - attack.lateral_movement
+    - attack.t1550.002
+logsource:
+    product: windows
+    service: security
+detection:
+    selection:
+        EventID: 4624
+        LogonType: 3
+        AuthenticationPackageName: 'NTLM'
+    filter_machine_accounts:
+        TargetUserName|endswith: '$'
+    filter_known_sources:
+        IpAddress:
+            - '192.168.1.100'
+            - '127.0.0.1'
+            - '-'
+    condition: selection and not filter_machine_accounts and not filter_known_sources
+falsepositives:
+    - Legitimate NTLM authentication from workstations
+    - Applications not supporting Kerberos
+level: medium
+
+---
+title: DCSync Attack Detection
+id: e5f6a7b8-c9d0-1234-ef56-789012345678
+status: experimental
+description: Detects DCSync attacks by monitoring for directory replication requests from non-DC accounts.
+references:
+    - https://attack.mitre.org/techniques/T1003/006/
+author: AD Security Lab
+date: 2024/01/01
+tags:
+    - attack.credential_access
+    - attack.t1003.006
+logsource:
+    product: windows
+    service: security
+detection:
+    selection:
+        EventID: 4662
+    selection_replication:
+        Properties|contains:
+            - '1131f6aa-9c07-11d1-f79f-00c04fc2dcd2'  # DS-Replication-Get-Changes
+            - '1131f6ad-9c07-11d1-f79f-00c04fc2dcd2'  # DS-Replication-Get-Changes-All
+            - 'Replicating Directory Changes'
+    filter_machine_accounts:
+        SubjectUserName|endswith: '$'
+    condition: selection and selection_replication and not filter_machine_accounts
+falsepositives:
+    - Legitimate Azure AD Connect synchronization
+    - Third-party identity management tools
+level: critical
+
+---
+title: Golden Ticket Attack - Abnormal TGT Lifetime
+id: f6a7b8c9-d0e1-2345-f678-901234567890
+status: experimental
+description: Detects potential Golden Ticket attacks by monitoring for TGT requests with abnormally long ticket lifetimes.
+references:
+    - https://attack.mitre.org/techniques/T1558/001/
+author: AD Security Lab
+date: 2024/01/01
+tags:
+    - attack.credential_access
+    - attack.persistence
+    - attack.t1558.001
+logsource:
+    product: windows
+    service: security
+detection:
+    selection:
+        EventID: 4768
+        Status: '0x0'
+    # Note: Ticket lifetime comparison requires post-processing
+    # This is a simplified rule - enhance with custom logic
+    condition: selection
+falsepositives:
+    - Misconfigured Kerberos policies
+level: high
+
+---
+title: Suspicious LSASS Process Access
+id: a7b8c9d0-e1f2-3456-7890-12345678abcd
+status: experimental
+description: Detects access to LSASS process memory, commonly used by credential dumping tools like Mimikatz.
+references:
+    - https://attack.mitre.org/techniques/T1003/001/
+author: AD Security Lab
+date: 2024/01/01
+tags:
+    - attack.credential_access
+    - attack.t1003.001
+logsource:
+    category: process_access
+    product: windows
+detection:
+    selection:
+        TargetImage|endswith: '\lsass.exe'
+        GrantedAccess|contains:
+            - '0x1010'
+            - '0x1038'
+            - '0x1410'
+            - '0x1418'
+            - '0x1438'
+            - '0x143a'
+    filter_legitimate:
+        SourceImage|endswith:
+            - '\wmiprvse.exe'
+            - '\taskmgr.exe'
+            - '\procexp64.exe'
+            - '\procexp.exe'
+    condition: selection and not filter_legitimate
+falsepositives:
+    - Antivirus products
+    - EDR solutions
+level: high
+
+---
+title: Security Log Cleared
+id: b8c9d0e1-f2a3-4567-8901-23456789bcde
+status: stable
+description: Detects clearing of Windows Security event log - often done to cover tracks after an attack.
+references:
+    - https://attack.mitre.org/techniques/T1070/001/
+author: AD Security Lab
+date: 2024/01/01
+tags:
+    - attack.defense_evasion
+    - attack.t1070.001
+logsource:
+    product: windows
+    service: security
+detection:
+    selection:
+        EventID: 1102
+    condition: selection
+falsepositives:
+    - Legitimate administrative activity
+level: high
+
+---
+title: User Added to Sensitive Group
+id: c9d0e1f2-a3b4-5678-9012-3456789acdef
+status: stable
+description: Detects when a user is added to a privileged security group like Domain Admins.
+references:
+    - https://attack.mitre.org/techniques/T1098/
+author: AD Security Lab
+date: 2024/01/01
+tags:
+    - attack.persistence
+    - attack.privilege_escalation
+    - attack.t1098
+logsource:
+    product: windows
+    service: security
+detection:
+    selection:
+        EventID: 4728
+    selection_groups:
+        TargetUserName|contains:
+            - 'Domain Admins'
+            - 'Enterprise Admins'
+            - 'Schema Admins'
+            - 'Administrators'
+            - 'Account Operators'
+            - 'Backup Operators'
+    condition: selection and selection_groups
+falsepositives:
+    - Legitimate privilege grants by IT administrators
+level: high
+
+---
+title: Honey Token Account Login
+id: d0e1f2a3-b4c5-6789-0123-456789abcdef
+status: experimental
+description: Detects any login attempt to honey token accounts, which should never be used legitimately.
+references:
+    - https://attack.mitre.org/techniques/T1078/
+author: AD Security Lab
+date: 2024/01/01
+tags:
+    - attack.initial_access
+    - attack.t1078
+logsource:
+    product: windows
+    service: security
+detection:
+    selection:
+        EventID:
+            - 4624
+            - 4625
+        TargetUserName:
+            - 'svc_backup'
+            - 'honeypot'
+            - 'admin_test'
+    condition: selection
+falsepositives:
+    - None expected - these accounts should never be used
+level: critical

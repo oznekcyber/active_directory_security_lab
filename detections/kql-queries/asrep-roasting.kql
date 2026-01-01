@@ -1,0 +1,65 @@
+// AS-REP Roasting Detection
+// MITRE ATT&CK: T1558.004 - AS-REP Roasting
+// 
+// Description: Detects AS-REP Roasting attacks by looking for Kerberos
+// authentication requests (AS-REQ) using RC4 encryption for accounts
+// that don't require pre-authentication.
+//
+// Detection Logic:
+// - Kerberos TGT Request (Event ID 4768)
+// - RC4 encryption type (0x17)
+// - Multiple requests for same user indicates enumeration
+
+// Main Detection Query
+SecurityEvent
+| where TimeGenerated > ago(1h)
+| where EventID == 4768
+| where TicketEncryptionType == "0x17"  // RC4 encryption (weaker, used in AS-REP)
+| where ResultCode == "0x0"              // Successful request
+| summarize 
+    RequestCount = count(),
+    UniqueSourceIPs = dcount(IpAddress),
+    SourceIPs = make_set(IpAddress, 10)
+  by TargetUserName, bin(TimeGenerated, 1h)
+| where RequestCount >= 3
+| project 
+    TimeGenerated,
+    TargetUserName,
+    RequestCount,
+    UniqueSourceIPs,
+    SourceIPs,
+    AlertDescription = strcat("Potential AS-REP Roasting: ", TargetUserName, " received ", RequestCount, " TGT requests with RC4 encryption"),
+    AlertSeverity = case(
+        RequestCount > 10, "High",
+        RequestCount > 5, "Medium",
+        "Low"
+    )
+| order by RequestCount desc
+
+// Alternative: Track users without pre-auth being targeted
+/*
+SecurityEvent
+| where TimeGenerated > ago(24h)
+| where EventID == 4768
+| where TicketEncryptionType == "0x17"
+| project TimeGenerated, TargetUserName, IpAddress, TicketEncryptionType
+| summarize Count = count() by TargetUserName, IpAddress
+| where Count > 1
+| order by Count desc
+*/
+
+// Detection with failure analysis (indicates enumeration)
+/*
+SecurityEvent
+| where TimeGenerated > ago(1h)
+| where EventID == 4768
+| where TicketEncryptionType == "0x17"
+| summarize 
+    SuccessCount = countif(ResultCode == "0x0"),
+    FailureCount = countif(ResultCode != "0x0"),
+    TotalCount = count()
+  by TargetUserName, IpAddress
+| where TotalCount > 2
+| extend SuccessRate = round(100.0 * SuccessCount / TotalCount, 2)
+| project TimeGenerated = now(), TargetUserName, IpAddress, SuccessCount, FailureCount, SuccessRate
+*/

@@ -1,0 +1,177 @@
+{
+    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+    "contentVersion": "1.0.0.0",
+    "metadata": {
+        "title": "Disable Compromised User Account",
+        "description": "Automatically disables a user account when a high-severity security alert is triggered. Revokes all active sessions and notifies the security team.",
+        "prerequisites": [
+            "Azure AD connection with User.ReadWrite.All permission",
+            "Microsoft Teams or Email connection for notifications",
+            "Azure Sentinel connection"
+        ],
+        "author": "AD Security Lab",
+        "lastModified": "2024-01-01T00:00:00Z",
+        "tags": ["Incident Response", "User Remediation", "Azure AD"]
+    },
+    "parameters": {
+        "$connections": {
+            "defaultValue": {},
+            "type": "Object"
+        }
+    },
+    "triggers": {
+        "Microsoft_Sentinel_incident": {
+            "type": "ApiConnectionWebhook",
+            "inputs": {
+                "body": {
+                    "callback_url": "@{listCallbackUrl()}"
+                },
+                "host": {
+                    "connection": {
+                        "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                    }
+                },
+                "path": "/incident-creation"
+            }
+        }
+    },
+    "actions": {
+        "Entities_-_Get_Accounts": {
+            "runAfter": {},
+            "type": "ApiConnection",
+            "inputs": {
+                "body": "@triggerBody()?['object']?['properties']?['relatedEntities']",
+                "host": {
+                    "connection": {
+                        "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                    }
+                },
+                "method": "post",
+                "path": "/entities/account"
+            }
+        },
+        "For_each_account": {
+            "foreach": "@body('Entities_-_Get_Accounts')?['Accounts']",
+            "actions": {
+                "Condition_-_Check_if_account_exists": {
+                    "actions": {
+                        "Disable_user_account": {
+                            "runAfter": {},
+                            "type": "ApiConnection",
+                            "inputs": {
+                                "body": {
+                                    "accountEnabled": false
+                                },
+                                "host": {
+                                    "connection": {
+                                        "name": "@parameters('$connections')['azuread']['connectionId']"
+                                    }
+                                },
+                                "method": "patch",
+                                "path": "/v1.0/users/@{items('For_each_account')?['AadUserId']}"
+                            }
+                        },
+                        "Revoke_user_sessions": {
+                            "runAfter": {
+                                "Disable_user_account": ["Succeeded"]
+                            },
+                            "type": "ApiConnection",
+                            "inputs": {
+                                "host": {
+                                    "connection": {
+                                        "name": "@parameters('$connections')['azuread']['connectionId']"
+                                    }
+                                },
+                                "method": "post",
+                                "path": "/v1.0/users/@{items('For_each_account')?['AadUserId']}/revokeSignInSessions"
+                            }
+                        },
+                        "Add_comment_to_incident": {
+                            "runAfter": {
+                                "Revoke_user_sessions": ["Succeeded"]
+                            },
+                            "type": "ApiConnection",
+                            "inputs": {
+                                "body": {
+                                    "incidentArmId": "@triggerBody()?['object']?['id']",
+                                    "message": "<p><strong>Automated Response Executed:</strong><br>\n- User account disabled: @{items('For_each_account')?['Name']}<br>\n- All sessions revoked<br>\n- Timestamp: @{utcNow()}</p>"
+                                },
+                                "host": {
+                                    "connection": {
+                                        "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                                    }
+                                },
+                                "method": "post",
+                                "path": "/Incidents/Comment"
+                            }
+                        }
+                    },
+                    "runAfter": {},
+                    "expression": {
+                        "and": [
+                            {
+                                "not": {
+                                    "equals": [
+                                        "@items('For_each_account')?['AadUserId']",
+                                        "@null"
+                                    ]
+                                }
+                            }
+                        ]
+                    },
+                    "type": "If"
+                }
+            },
+            "runAfter": {
+                "Entities_-_Get_Accounts": ["Succeeded"]
+            },
+            "type": "Foreach"
+        },
+        "Send_notification_to_security_team": {
+            "runAfter": {
+                "For_each_account": ["Succeeded"]
+            },
+            "type": "ApiConnection",
+            "inputs": {
+                "body": {
+                    "body": {
+                        "content": "<p><strong>🚨 Security Alert - User Account Disabled</strong></p>\n<p><strong>Incident:</strong> @{triggerBody()?['object']?['properties']?['title']}</p>\n<p><strong>Severity:</strong> @{triggerBody()?['object']?['properties']?['severity']}</p>\n<p><strong>Affected Users:</strong></p>\n<ul>\n@{join(body('Entities_-_Get_Accounts')?['Accounts'], '<li>', '</li>')}\n</ul>\n<p><strong>Actions Taken:</strong></p>\n<ul>\n<li>User account(s) disabled in Azure AD</li>\n<li>All active sessions revoked</li>\n</ul>\n<p><strong>Next Steps:</strong></p>\n<ol>\n<li>Investigate the incident in Azure Sentinel</li>\n<li>Reset user password if re-enabling account</li>\n<li>Check for lateral movement from compromised account</li>\n</ol>",
+                        "contentType": "html"
+                    },
+                    "importance": "High",
+                    "subject": "[AUTOMATED] Compromised Account Disabled - @{triggerBody()?['object']?['properties']?['incidentNumber']}",
+                    "toRecipients": "security-team@yourcompany.local"
+                },
+                "host": {
+                    "connection": {
+                        "name": "@parameters('$connections')['office365']['connectionId']"
+                    }
+                },
+                "method": "post",
+                "path": "/v2/Mail"
+            }
+        },
+        "Update_incident_status": {
+            "runAfter": {
+                "Send_notification_to_security_team": ["Succeeded"]
+            },
+            "type": "ApiConnection",
+            "inputs": {
+                "body": {
+                    "incidentArmId": "@triggerBody()?['object']?['id']",
+                    "status": "Active",
+                    "classification": "TruePositive",
+                    "classificationComment": "Automated response: User account disabled and sessions revoked."
+                },
+                "host": {
+                    "connection": {
+                        "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                    }
+                },
+                "method": "put",
+                "path": "/Incidents"
+            }
+        }
+    },
+    "outputs": {}
+}
